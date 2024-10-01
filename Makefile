@@ -1,2 +1,2 @@
 main:
-	go run main.go
+	go run .

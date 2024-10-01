@@ -68,7 +68,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		}
 		elapsed := time.Since(start)
-		fmt.Printf("Request for %s processed in %v\n", procName, elapsed)
+		fmt.Printf("%s: %v\n", procName, elapsed)
 	}
 }
 
