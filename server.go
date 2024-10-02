@@ -1,121 +1,156 @@
 package main
 
 import (
-	"encoding/binary"
+	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type Server struct {
-	procs map[string]reflect.Value
+	funcs map[string]any
 }
 
 func NewServer() *Server {
-	return &Server{procs: make(map[string]reflect.Value)}
+	return &Server{}
 }
 
-func (s *Server) Register(name string, procedure any) {
-	s.procs[name] = reflect.ValueOf(procedure)
+func (s *Server) Register(name string, proc any) {
+  if s.funcs == nil { 
+    s.funcs = make(map[string]any)
+  }
+	s.funcs[name] = proc
 }
 
 func (s *Server) Serve(port int) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
+		fmt.Println("Error starting server:", err)
 		return err
 	}
-	defer listener.Close()
-	fmt.Printf("Server listening on port %d\n", port)
+	defer ln.Close()
+
+	fmt.Printf("Server listening on %d\n", port)
+
 	for {
-		conn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-			return err
+			fmt.Println("Error accepting connection:", err)
+			continue
 		}
+
 		go s.handleConnection(conn)
 	}
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-	for {
-		start := time.Now()
-		procName, err := readProcName(conn)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Printf("Error reading procedure name: %v\n", err)
-			}
-			return
-		}
-		proc, ok := s.procs[procName]
-		if !ok {
-			fmt.Printf("Unknown procedure: %s\n", procName)
-			continue
-		}
-		args, err := readArgs(conn, proc.Type().NumIn())
-		if err != nil {
-			fmt.Printf("Error reading arguments: %v\n", err)
-			continue
-		}
-		results := proc.Call(args)
-		if len(results) > 0 {
-			err = write(conn, results[0].Interface())
+  start := time.Now()
+
+	reader := bufio.NewReader(conn)
+
+	message, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Connection closed")
+		return
+	}
+
+	message = strings.TrimSpace(message)
+
+	parts := strings.SplitN(message, " ", 3)
+	if len(parts) < 2 {
+		conn.Write([]byte("Bad Request\n"))
+		return
+	}
+
+	funcName := parts[1]
+	args := ""
+	if len(parts) > 2 {
+		args = parts[2]
+	}
+
+	function, exists := s.funcs[funcName]
+	if !exists {
+		conn.Write([]byte("Function Not Found\n"))
+		return
+	}
+
+	funcValue := reflect.ValueOf(function)
+	funcType := funcValue.Type()
+
+	argVals, err := parseArgs(args, funcType)
+	if err != nil {
+		conn.Write([]byte("Invalid Arguments\n"))
+		return
+	}
+
+	funcResults := funcValue.Call(argVals)
+
+	resp, err := fmtResp(funcResults)
+	if err != nil {
+		conn.Write([]byte("Internal Server Error\n"))
+		return
+	}
+
+	respLen := len(resp)
+	conn.Write([]byte(fmt.Sprintf("%d %s\n", respLen, resp)))
+  conn.Close()
+
+  elapsed := time.Since(start)
+  fmt.Println(elapsed)
+}
+
+func fmtResp(results []reflect.Value) (string, error) {
+	if len(results) == 1 {
+		result := results[0].Interface()
+		if reflect.TypeOf(result).Kind() == reflect.Struct || reflect.TypeOf(result).Kind() == reflect.Map {
+			jsonData, err := json.Marshal(result)
 			if err != nil {
-				fmt.Printf("Error writing result: %v\n", err)
-				return
+				return "", err
 			}
+			return string(jsonData), nil
 		}
-		elapsed := time.Since(start)
-		fmt.Printf("%s: %v\n", procName, elapsed)
+
+		return fmt.Sprintf("%v", result), nil
 	}
+
+	var resultStrings []string
+	for _, result := range results {
+		resultStrings = append(resultStrings, fmt.Sprintf("%v", result.Interface()))
+	}
+	return strings.Join(resultStrings, " "), nil
 }
 
-func readProcName(r io.Reader) (string, error) {
-	var length int64
-	err := binary.Read(r, binary.BigEndian, &length)
-	if err != nil {
-		return "", err
-	}
-	buffer := make([]byte, length)
-	_, err = io.ReadFull(r, buffer)
-	if err != nil {
-		return "", err
-	}
-	return string(buffer), nil
-}
+func parseArgs(args string, funcType reflect.Type) ([]reflect.Value, error) {
+	argParts := strings.Split(args, " ")
+	numArgs := funcType.NumIn()
 
-func readArgs(r io.Reader, count int) ([]reflect.Value, error) {
-	args := make([]reflect.Value, count)
-	for i := 0; i < count; i++ {
-		arg, err := readProcName(r)
-		if err != nil {
-			return nil, err
-		}
-		args[i] = reflect.ValueOf(arg)
+	if numArgs != len(argParts) {
+		return nil, fmt.Errorf("incorrect number of arguments")
 	}
-	return args, nil
-}
 
-func write(w io.Writer, result any) error {
-	var resultBytes []byte
-	var err error
+	argVals := make([]reflect.Value, numArgs)
+	for i := 0; i < numArgs; i++ {
+		argType := funcType.In(i)
 
-	switch v := result.(type) {
-	case string, int, float64, bool:
-		resultBytes = []byte(fmt.Sprintf("%v", v))
-	default:
-		resultBytes, err = json.Marshal(v)
-		if err != nil {
-			return err
+		switch argType.Kind() {
+		case reflect.Int:
+			val, err := strconv.Atoi(argParts[i])
+			if err != nil {
+				return nil, err
+			}
+			argVals[i] = reflect.ValueOf(val)
+
+		case reflect.String:
+			argVals[i] = reflect.ValueOf(argParts[i])
+
+		default:
+			return nil, fmt.Errorf("unsupported argument type")
 		}
 	}
 
-	err = binary.Write(w, binary.BigEndian, int64(len(resultBytes)))
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(resultBytes)
-	return err
+	return argVals, nil
 }
