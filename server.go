@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"reflect"
 	"strconv"
@@ -20,9 +21,9 @@ func NewServer() *Server {
 }
 
 func (s *Server) Register(name string, proc any) {
-  if s.funcs == nil { 
-    s.funcs = make(map[string]any)
-  }
+	if s.funcs == nil {
+		s.funcs = make(map[string]any)
+	}
 	s.funcs[name] = proc
 }
 
@@ -48,7 +49,7 @@ func (s *Server) Serve(port int) error {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-  start := time.Now()
+	start := time.Now()
 
 	reader := bufio.NewReader(conn)
 
@@ -89,21 +90,20 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	funcResults := funcValue.Call(argVals)
 
-	resp, err := fmtResp(funcResults)
+	resp, err := formatResponse(funcResults)
 	if err != nil {
 		conn.Write([]byte("Internal Server Error\n"))
 		return
 	}
 
-	respLen := len(resp)
-	conn.Write([]byte(fmt.Sprintf("%d %s\n", respLen, resp)))
-  conn.Close()
+	conn.Write([]byte(fmt.Sprintf("%s\n", resp)))
 
-  elapsed := time.Since(start)
-  fmt.Println(elapsed)
+	elapsed := time.Since(start)
+	logger := log.New(log.Writer(), "", log.Ldate|log.Ltime|log.Lmicroseconds)
+	logger.Printf("%5d µs", elapsed.Microseconds())
 }
 
-func fmtResp(results []reflect.Value) (string, error) {
+func formatResponse(results []reflect.Value) (string, error) {
 	if len(results) == 1 {
 		result := results[0].Interface()
 		if reflect.TypeOf(result).Kind() == reflect.Struct || reflect.TypeOf(result).Kind() == reflect.Map {

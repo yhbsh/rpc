@@ -1,17 +1,17 @@
 package main
 
 import (
-  "fmt"
+	"fmt"
 )
 
 func main() {
-  server := NewServer()
-  server.Register("getUserByID", func(id int) int { 
-    return id 
-  })
+	server := NewServer()
+	server.Register("echo", func(message string) map[string]any {
+		return map[string]any{"message": message}
+	})
 
-  err := server.Serve(8080)
-  if err != nil {
-    fmt.Printf("Server error: %v\n", err)
-  }
+	err := server.Serve(8080)
+	if err != nil {
+		fmt.Printf("Server error: %v\n", err)
+	}
 }
